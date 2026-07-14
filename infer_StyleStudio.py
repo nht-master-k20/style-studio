@@ -45,6 +45,9 @@ def main(args):
         fuScale=args.fuScale,
         end_fusion=args.end_fusion,
         adainIP=args.adainIP,
+        adaptive_fusion=args.adaptive_fusion,
+        rho=args.rho,
+        end_fusion_max=args.end_fusion_max,
     )
 
     seed = 42
@@ -78,6 +81,8 @@ def main(args):
         neg_style_img = cv2.resize(cv2.imread(args.neg_style_path), (512, 512))
         neg_pil_style_image = Image.fromarray(cv2.cvtColor(neg_style_img, cv2.COLOR_BGR2RGB))
 
+    import json, time
+    t0 = time.time()
     images = stylestudio.generate(
         pil_style_image=style_image,
         neg_pil_style_image=neg_pil_style_image,
@@ -90,17 +95,27 @@ def main(args):
         num_images_per_prompt=1,
         num_samples=num_sample,
         num_inference_steps=args.num_inference_steps,
-        
+        end_fusion=args.end_fusion,
+
         generator=generator,
         latents=init_latents,
     )
+    elapsed = time.time() - t0
     if args.fuAttn or args.fuSAttn or args.fuIPAttn:
         assert len(images) == 2
         images[1].save("./test.jpg")
     else:
         images[0].save("./test.jpg")
-    
+
     print("final")
+
+    if args.log_json:
+        log = {"args": vars(args), "elapsed_sec": round(elapsed, 1)}
+        if stylestudio.fusion_controller is not None:
+            log["fusion"] = stylestudio.fusion_controller.to_dict()
+        with open(args.log_json, "w") as f:
+            json.dump(log, f, indent=2)
+        print(f"log saved to {args.log_json}")
 
     
     
@@ -117,6 +132,10 @@ if __name__=='__main__':
     parser.add_argument("--prompt", type=str, default="A red apple")
     parser.add_argument("--style_path", type=str, default="assets/style1.jpg")
     parser.add_argument("--neg_style_path", type=str, default=None)
+    parser.add_argument("--adaptive_fusion", action="store_true")
+    parser.add_argument("--rho", type=float, default=0.2)
+    parser.add_argument("--end_fusion_max", type=int, default=30)
+    parser.add_argument("--log_json", type=str, default=None)
 
     args = parser.parse_args()
 

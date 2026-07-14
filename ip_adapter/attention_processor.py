@@ -1194,19 +1194,23 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         end_fusion=0,
         attn_name=None,
         num_inference_step=50,
+        fusion_controller=None,
     ):
         super().__init__()
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
         self.atten_control = atten_control
         self.save_in_unet = save_in_unet
-        
+
         self.fuSAttn = fuSAttn
         self.fuScale = fuScale
         self.denoise_step = 0
         self.end_fusion = end_fusion
         self.name = attn_name
         self.num_inference_step = num_inference_step
+        self.fusion_controller = fusion_controller
+        if self.fusion_controller is not None and self.fuSAttn:
+            self.fusion_controller.register(attn_name)
 
     def __call__(
         self,
@@ -1261,10 +1265,18 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        if self.fuSAttn and self.denoise_step <= self.end_fusion:
+        if self.fusion_controller is not None:
+            fusion_now = self.fuSAttn and self.fusion_controller.is_active(self.denoise_step)
+        else:
+            fusion_now = self.fuSAttn and self.denoise_step <= self.end_fusion
+        if fusion_now:
             assert query.shape[0] == 4
             scale_factor = 1 / math.sqrt(torch.tensor(head_dim, dtype=query.dtype))
             attn_probs = (torch.matmul(query, key.transpose(-2, -1)) * scale_factor).softmax(dim=-1)
+            if self.fusion_controller is not None:
+                # cond branch divergence, measured BEFORE the teacher copy
+                d = (attn_probs[3] - attn_probs[2]).abs().mean().item()
+                self.fusion_controller.report(self.name, self.denoise_step, d)
             attn_probs[1] = attn_probs[0]
             attn_probs[3] = attn_probs[2]
             hidden_states = torch.matmul(attn_probs, value)

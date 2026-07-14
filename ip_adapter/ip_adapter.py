@@ -880,6 +880,9 @@ class StyleStudio_Adapter(CSGO):
                 adainIP=False,
                 end_fusion=0,
                 save_attn_map=False,
+                adaptive_fusion=False,
+                rho=0.2,
+                end_fusion_max=30,
                 ):
         self.fuAttn = fuAttn
         self.fuSAttn = fuSAttn
@@ -906,6 +909,12 @@ class StyleStudio_Adapter(CSGO):
         self.controlnet_adapter = controlnet_adapter
         self.controlnet_target_content_blocks = controlnet_target_content_blocks
         self.controlnet_target_style_blocks = controlnet_target_style_blocks
+
+        self.fusion_controller = None
+        if adaptive_fusion:
+            from .fusion_controller import FusionController
+            self.fusion_controller = FusionController(rho=rho, end_fusion_max=end_fusion_max)
+            print(f"adaptive fusion: rho={rho}, end_fusion_max={end_fusion_max}")
 
         self.pipe = sd_pipe.to(self.device)
         self.set_ip_adapter()
@@ -941,7 +950,8 @@ class StyleStudio_Adapter(CSGO):
                 attn_procs[name] = AttnProcessor_hijack(
                                         fuSAttn=self.fuSAttn,
                                         end_fusion=self.end_fusion,
-                                        attn_name=name)
+                                        attn_name=name,
+                                        fusion_controller=self.fusion_controller)
             else:
                 # layername_id += 1
                 selected = False
@@ -1133,6 +1143,9 @@ class StyleStudio_Adapter(CSGO):
             self.set_SAttn(use_SAttn=use_SAttn)
         
         self.set_num_inference_step(num_T=num_inference_steps)
+
+        if self.fusion_controller is not None:
+            self.fusion_controller.reset()
 
         num_prompts = 1 if isinstance(pil_style_image, Image.Image) else len(pil_style_image)
 
