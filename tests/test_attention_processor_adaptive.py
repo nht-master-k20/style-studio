@@ -129,6 +129,18 @@ def test_prev_map_reset_between_generates():
     assert [s for _, s, _ in ctrl.reports] == [2]   # van chi 1 report
 
 
+def test_query_chunking_is_numerically_exact():
+    """Chia query thanh nhieu chunk phai cho ket qua y het 1 chunk (softmax theo hang query)."""
+    x = batch4_input(seed=5)
+    p_single = AttnProcessor2_0_hijack(fuSAttn=True, end_fusion=1, attn_name="t", num_inference_step=4)
+    p_single.fusion_query_chunk = 100     # >= seq_len(3) -> 1 chunk
+    p_chunked = AttnProcessor2_0_hijack(fuSAttn=True, end_fusion=1, attn_name="t", num_inference_step=4)
+    p_chunked.fusion_query_chunk = 1      # 1 query moi chunk -> 3 chunk
+    out_single = make_attn(p_single)(x)
+    out_chunked = make_attn(p_chunked)(x)
+    assert torch.allclose(out_single, out_chunked, atol=1e-5)
+
+
 def test_registers_with_real_controller():
     ctrl = FusionController()
     AttnProcessor2_0_hijack(fuSAttn=True, end_fusion=0, attn_name="layer_z",

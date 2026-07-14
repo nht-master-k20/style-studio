@@ -1212,6 +1212,8 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         # previous-step teacher self-attn map (head-averaged, cond branch), for the
         # adaptive temporal-stability signal. Reset at the first step of each generate.
         self._prev_teacher_attn = None
+        # query-chunk size for the fusion path (caps peak VRAM); None/0 -> no chunking.
+        self.fusion_query_chunk = 1024
         if self.fusion_controller is not None and self.fuSAttn:
             self.fusion_controller.register(attn_name)
 
@@ -1275,23 +1277,32 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         if fusion_now:
             assert query.shape[0] == 4
             scale_factor = 1 / math.sqrt(torch.tensor(head_dim, dtype=query.dtype))
-            attn_probs = (torch.matmul(query, key.transpose(-2, -1)) * scale_factor).softmax(dim=-1)
+            n_q, n_k = query.shape[-2], key.shape[-2]
+            # Chunk over the query dim so the materialized attention is [4, h, chunk, n_k]
+            # instead of [4, h, n_q, n_k] -> caps peak VRAM on the fusion path (T4-safe).
+            # softmax is per query row, so chunking queries is numerically EXACT.
+            chunk = self.fusion_query_chunk or n_q
+            hidden_states = torch.empty_like(query)          # [4, h, n_q, head_dim]
+            teacher_map = query.new_empty((n_q, n_k)) if self.fusion_controller is not None else None
+            for i in range(0, n_q, chunk):
+                j = min(i + chunk, n_q)
+                attn_probs = (torch.matmul(query[:, :, i:j], key.transpose(-2, -1)) * scale_factor).softmax(dim=-1)
+                if teacher_map is not None:
+                    teacher_map[i:j] = attn_probs[2].mean(dim=0)   # head-averaged teacher rows
+                attn_probs[1] = attn_probs[0]
+                attn_probs[3] = attn_probs[2]
+                hidden_states[:, :, i:j] = torch.matmul(attn_probs, value)
             if self.fusion_controller is not None:
                 # Adaptive signal = TEACHER self-attn temporal (in)stability on the cond
                 # branch: "layout locked" <=> teacher attn stops changing step-to-step.
-                #   d(t) = mean|A_teacher(t) - A_teacher(t-1)|   (head-averaged, for memory)
-                # Measured on the teacher map (index 2), which the copy below leaves intact.
-                # First fused step has no previous map -> reset and skip its report.
+                #   d(t) = mean|A_teacher(t) - A_teacher(t-1)|   (head-averaged)
+                # No previous map at the first fused step -> reset and skip its report.
                 if self.denoise_step == 1:
                     self._prev_teacher_attn = None
-                cur = attn_probs[2].mean(dim=0)          # [seq, seq]
                 if self._prev_teacher_attn is not None:
-                    d = (cur - self._prev_teacher_attn).abs().mean().item()
+                    d = (teacher_map - self._prev_teacher_attn).abs().mean().item()
                     self.fusion_controller.report(self.name, self.denoise_step, d)
-                self._prev_teacher_attn = cur
-            attn_probs[1] = attn_probs[0]
-            attn_probs[3] = attn_probs[2]
-            hidden_states = torch.matmul(attn_probs, value)
+                self._prev_teacher_attn = teacher_map
         else:
             hidden_states = F.scaled_dot_product_attention(
                 query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
