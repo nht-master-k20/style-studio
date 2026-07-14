@@ -1224,8 +1224,6 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         temb=None,
     ):
         self.denoise_step += 1
-        if self.denoise_step == 1:
-            self._prev_teacher_attn = None   # fresh generate: quen map cua run truoc
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -1283,7 +1281,9 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
                 # branch: "layout locked" <=> teacher attn stops changing step-to-step.
                 #   d(t) = mean|A_teacher(t) - A_teacher(t-1)|   (head-averaged, for memory)
                 # Measured on the teacher map (index 2), which the copy below leaves intact.
-                # No previous map at the first fused step -> skip report that step.
+                # First fused step has no previous map -> reset and skip its report.
+                if self.denoise_step == 1:
+                    self._prev_teacher_attn = None
                 cur = attn_probs[2].mean(dim=0)          # [seq, seq]
                 if self._prev_teacher_attn is not None:
                     d = (cur - self._prev_teacher_attn).abs().mean().item()
