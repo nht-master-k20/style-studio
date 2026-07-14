@@ -1,14 +1,18 @@
 class FusionController:
-    """Decide when to stop teacher attention fusion, based on student->teacher convergence.
+    """Decide when to stop teacher attention fusion, based on TEACHER layout stability.
 
-    Each self-attn hijack processor register()s at setup and report()s the divergence
-    d = mean|attn_student - attn_teacher| (cond branch) at every fusion step, BEFORE the
-    teacher map is copied over. Once all registered layers have reported for step t, the
-    controller computes r(t) and decides whether to stop fusing from step t+1 onward.
+    Each self-attn hijack processor register()s at setup and report()s a per-step
+    divergence d at every fusion step. The signal is the teacher self-attention's
+    temporal change on the cond branch, d(t) = mean|A_teacher(t) - A_teacher(t-1)|:
+    while the layout is still forming the teacher map changes a lot; once the layout is
+    "locked" it barely changes, so continuing to force it onto the student adds nothing.
+    (No previous map exists at the first fused step, so that step is not reported.)
+    Once all registered layers have reported for step t, the controller computes r(t)
+    and decides whether to stop fusing from step t+1 onward.
 
-    Per-layer normalization uses a RUNNING MAX baseline (not d at step 1): layers placed
-    before the first cross-attention see identical teacher/student hidden states at step 1
-    (same init latents), so their d(1) is ~0 and would break ratio normalization.
+    Per-layer normalization uses a RUNNING MAX baseline so that layers with different
+    attention scales/resolutions are comparable and a layer that keeps setting new highs
+    stays at r_layer~1 until its change actually decays from the peak.
     """
 
     _EPS = 1e-12

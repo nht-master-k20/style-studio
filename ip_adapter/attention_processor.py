@@ -1209,6 +1209,9 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         self.name = attn_name
         self.num_inference_step = num_inference_step
         self.fusion_controller = fusion_controller
+        # previous-step teacher self-attn map (head-averaged, cond branch), for the
+        # adaptive temporal-stability signal. Reset at the first step of each generate.
+        self._prev_teacher_attn = None
         if self.fusion_controller is not None and self.fuSAttn:
             self.fusion_controller.register(attn_name)
 
@@ -1221,6 +1224,8 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
         temb=None,
     ):
         self.denoise_step += 1
+        if self.denoise_step == 1:
+            self._prev_teacher_attn = None   # fresh generate: quen map cua run truoc
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -1274,9 +1279,16 @@ class AttnProcessor2_0_hijack(torch.nn.Module):
             scale_factor = 1 / math.sqrt(torch.tensor(head_dim, dtype=query.dtype))
             attn_probs = (torch.matmul(query, key.transpose(-2, -1)) * scale_factor).softmax(dim=-1)
             if self.fusion_controller is not None:
-                # cond branch divergence, measured BEFORE the teacher copy
-                d = (attn_probs[3] - attn_probs[2]).abs().mean().item()
-                self.fusion_controller.report(self.name, self.denoise_step, d)
+                # Adaptive signal = TEACHER self-attn temporal (in)stability on the cond
+                # branch: "layout locked" <=> teacher attn stops changing step-to-step.
+                #   d(t) = mean|A_teacher(t) - A_teacher(t-1)|   (head-averaged, for memory)
+                # Measured on the teacher map (index 2), which the copy below leaves intact.
+                # No previous map at the first fused step -> skip report that step.
+                cur = attn_probs[2].mean(dim=0)          # [seq, seq]
+                if self._prev_teacher_attn is not None:
+                    d = (cur - self._prev_teacher_attn).abs().mean().item()
+                    self.fusion_controller.report(self.name, self.denoise_step, d)
+                self._prev_teacher_attn = cur
             attn_probs[1] = attn_probs[0]
             attn_probs[3] = attn_probs[2]
             hidden_states = torch.matmul(attn_probs, value)
