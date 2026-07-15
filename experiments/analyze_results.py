@@ -56,14 +56,19 @@ def plot_figures(df, out_root, results_dir):
 
     # duong hoi tu r(t) tu JSON adaptive
     plt.figure(figsize=(7, 4.5))
+    rho_seen = None
     for jpath in sorted(glob.glob(os.path.join(out_root, "adaptive", "*.json")))[:12]:
         with open(jpath) as f:
             fusion = json.load(f).get("fusion") or {}
+        if rho_seen is None:
+            rho_seen = fusion.get("rho")
         hist = fusion.get("r_history") or []
         if hist:
             steps, rs = zip(*hist)
             plt.plot(steps, rs, alpha=0.6)
-    plt.axhline(0.2, color="red", linestyle="--", label="rho")
+    # read the real rho from the adaptive logs instead of hardcoding it
+    rho_line = rho_seen if rho_seen is not None else 0.2
+    plt.axhline(rho_line, color="red", linestyle="--", label=f"rho={rho_line}")
     plt.xlabel("denoise step")
     plt.ylabel("r(t)")
     plt.title("Teacher-student attention convergence")
